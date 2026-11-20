@@ -104,6 +104,14 @@ fun DashboardScreen(userId: Int, username: String, role: String) {
         }
     }
 
+    val permisoNotificacionesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { concedido ->
+        if (!concedido) {
+            Toast.makeText(context, "Notificaciones desactivadas: puedes activarlas en Ajustes", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     fun cargarHistorial() {
         coroutineScope.launch {
             cargandoHistorial = true
@@ -139,6 +147,19 @@ fun DashboardScreen(userId: Int, username: String, role: String) {
                         description = descripcion
                     )
                 )
+
+                if (tipo == "ALERTA_INTRUSION" || tipo == "ALERTA_PROXIMIDAD_ON") {
+                    AlertaNotificationHelper.mostrarNotificacionAlerta(
+                        context = context,
+                        titulo = if (tipo == "ALERTA_INTRUSION") {
+                            "¡Alerta de Intrusión Detectada!"
+                        } else {
+                            "Alerta de Proximidad Activada"
+                        },
+                        mensaje = descripcion
+                    )
+                }
+
                 cargarHistorial()
             } catch (e: Exception) {
                 Toast.makeText(context, "Error al registrar: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -147,6 +168,16 @@ fun DashboardScreen(userId: Int, username: String, role: String) {
     }
 
     LaunchedEffect(Unit) {
+        AlertaNotificationHelper.crearCanal(context)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val tienePermiso = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!tienePermiso) {
+                permisoNotificacionesLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
         cargarHistorial()
     }
 
@@ -699,17 +730,13 @@ fun EliminarUsuarioDialog(
         title = { Text("Desactivar Usuario (Borrado Lógico)") },
         text = {
             if (usuarios.isEmpty()) {
-                Text("No hay otros usuarios activos disponibles para desactivar.")
+                Text("No hay otros usuarios activos para desactivar.")
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "Selecciona el usuario que perderá acceso al sistema (se conservará su historial de auditoría):",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     usuarios.forEach { user ->
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             RadioButton(
                                 selected = seleccionado?.id == user.id,
@@ -722,13 +749,11 @@ fun EliminarUsuarioDialog(
             }
         },
         confirmButton = {
-            if (usuarios.isNotEmpty()) {
-                Button(
-                    onClick = { seleccionado?.let { onConfirmEliminar(it) } },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Desactivar")
-                }
+            Button(
+                onClick = { seleccionado?.let { onConfirmEliminar(it) } },
+                enabled = seleccionado != null
+            ) {
+                Text("Desactivar")
             }
         },
         dismissButton = {
