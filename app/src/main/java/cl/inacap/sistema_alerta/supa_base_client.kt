@@ -8,6 +8,7 @@ object SupabaseClientInstance {
     val client = createSupabaseClient(
         supabaseUrl = "https://bsuxatfbsjjtubfifbfb.supabase.co",
         supabaseKey = "sb_publishable_qVROrRwSzECznHzG_Ub7Dw_tJKuGKpQ"
+
     ) {
         install(Postgrest)
     }

@@ -1,10 +1,15 @@
 package cl.inacap.sistema_alerta
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -17,11 +22,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import cl.inacap.sistema_alerta.data.*
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Columns
 import io.github.jan.supabase.postgrest.query.Order
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import org.mindrot.jbcrypt.BCrypt
 
@@ -85,6 +93,16 @@ fun DashboardScreen(userId: Int, username: String, role: String) {
 
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    val permisoBluetoothLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { concedido ->
+        if (concedido) {
+            Toast.makeText(context, "Permiso concedido, vuelve a pulsar Vincular", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "Permiso denegado: habilítalo en Ajustes", Toast.LENGTH_LONG).show()
+        }
+    }
 
     fun cargarHistorial() {
         coroutineScope.launch {
@@ -261,21 +279,54 @@ fun DashboardScreen(userId: Int, username: String, role: String) {
                                 color = if (dispositivoVinculado) Color(0xFF2E7D32) else Color.Gray
                             )
                         }
+
                         Button(
                             onClick = {
-                                dispositivoVinculado = !dispositivoVinculado
-                                val tipo = if (dispositivoVinculado) "DISPOSITIVO_VINCULADO" else "DISPOSITIVO_DESVINCULADO"
-                                val desc = if (dispositivoVinculado) {
-                                    "Dispositivo $nombreDispositivo vinculado por $username"
+                                if (!dispositivoVinculado) {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                                        ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.BLUETOOTH_CONNECT
+                                        ) != PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        permisoBluetoothLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                                        return@Button
+                                    }
+
+                                    coroutineScope.launch {
+                                        val resultado = withContext(Dispatchers.IO) {
+                                            validarYConectarBluetooth(
+                                                context = context,
+                                                nombreEsperado = nombreDispositivo,
+                                                intentarSocketReal = false
+                                            )
+                                        }
+
+                                        when (resultado) {
+                                            is BluetoothCheckResult.Vinculado -> {
+                                                dispositivoVinculado = true
+                                                registrarEvento(
+                                                    uid = if (userId != -1) userId else null,
+                                                    tipo = "DISPOSITIVO_VINCULADO",
+                                                    descripcion = "${resultado.detalle} por $username"
+                                                )
+                                                Toast.makeText(context, resultado.detalle, Toast.LENGTH_SHORT).show()
+                                            }
+                                            is BluetoothCheckResult.Error -> {
+                                                dispositivoVinculado = false
+                                                Toast.makeText(context, resultado.mensaje, Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    }
                                 } else {
-                                    "Dispositivo $nombreDispositivo desvinculado por $username"
+                                    dispositivoVinculado = false
+                                    registrarEvento(
+                                        uid = if (userId != -1) userId else null,
+                                        tipo = "DISPOSITIVO_DESVINCULADO",
+                                        descripcion = "Dispositivo $nombreDispositivo desvinculado por $username"
+                                    )
+                                    Toast.makeText(context, "Dispositivo desvinculado", Toast.LENGTH_SHORT).show()
                                 }
-                                registrarEvento(if (userId != -1) userId else null, tipo, desc)
-                                Toast.makeText(
-                                    context,
-                                    if (dispositivoVinculado) "Dispositivo vinculado" else "Dispositivo desvinculado",
-                                    Toast.LENGTH_SHORT
-                                ).show()
                             }
                         ) {
                             Text(if (dispositivoVinculado) "Desvincular" else "Vincular Dispositivo")
@@ -535,6 +586,14 @@ fun CrearUsuarioDialog(
     var nuevoUsername by remember { mutableStateOf("") }
     var nuevaPassword by remember { mutableStateOf("") }
     var rolSeleccionado by remember { mutableStateOf("operador") }
+    var verificando by remember { mutableStateOf(false) }
+
+    val validacionPass = remember(nuevaPassword) {
+        validarPasswordSegura(nuevaPassword)
+    }
+
+    val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -545,26 +604,37 @@ fun CrearUsuarioDialog(
                     value = nuevoUsername,
                     onValueChange = { nuevoUsername = it },
                     label = { Text("Nombre de usuario") },
-                    singleLine = true
+                    singleLine = true,
+                    enabled = !verificando
                 )
                 OutlinedTextField(
                     value = nuevaPassword,
                     onValueChange = { nuevaPassword = it },
                     label = { Text("Contraseña") },
                     singleLine = true,
+                    enabled = !verificando,
                     visualTransformation = PasswordVisualTransformation()
                 )
+                if (nuevaPassword.isNotEmpty() && !validacionPass.isValid) {
+                    Text(
+                        text = "Falta: ${validacionPass.missingRequirements.joinToString(", ")}",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
                 Text("Rol asignado:", style = MaterialTheme.typography.labelMedium)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(
                         selected = rolSeleccionado == "operador",
-                        onClick = { rolSeleccionado = "operador" }
+                        onClick = { rolSeleccionado = "operador" },
+                        enabled = !verificando
                     )
                     Text("Operador")
                     Spacer(modifier = Modifier.width(16.dp))
                     RadioButton(
                         selected = rolSeleccionado == "admin",
-                        onClick = { rolSeleccionado = "admin" }
+                        onClick = { rolSeleccionado = "admin" },
+                        enabled = !verificando
                     )
                     Text("Admin")
                 }
@@ -573,16 +643,43 @@ fun CrearUsuarioDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    if (nuevoUsername.isNotBlank() && nuevaPassword.isNotBlank()) {
-                        onConfirm(nuevoUsername, nuevaPassword, rolSeleccionado)
+                    val userLimpio = nuevoUsername.trim()
+                    if (userLimpio.isNotEmpty() && validacionPass.isValid && !verificando) {
+                        coroutineScope.launch {
+                            verificando = true
+                            try {
+                                val existe = validarExistencia(table = "users", username = userLimpio)
+                                if (existe) {
+                                    Toast.makeText(
+                                        context,
+                                        "El usuario '$userLimpio' ya existe",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    onConfirm(userLimpio, nuevaPassword, rolSeleccionado)
+                                }
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    "Error al verificar usuario: ${e.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } finally {
+                                verificando = false
+                            }
+                        }
                     }
-                }
+                },
+                enabled = nuevoUsername.isNotBlank() && validacionPass.isValid && !verificando
             ) {
-                Text("Crear")
+                Text(if (verificando) "Verificando..." else "Crear")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !verificando
+            ) {
                 Text("Cancelar")
             }
         }
@@ -595,7 +692,7 @@ fun EliminarUsuarioDialog(
     onDismiss: () -> Unit,
     onConfirmEliminar: (UserDto) -> Unit
 ) {
-    var seleccionado by remember { mutableStateOf<UserDto?>(usuarios.firstOrNull()) }
+    var seleccionado by remember(usuarios) { mutableStateOf<UserDto?>(usuarios.firstOrNull()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
